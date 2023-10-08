@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.ObjectPool;
+﻿using Faster.Map;
+using Microsoft.Extensions.ObjectPool;
 using System.Diagnostics;
 
 namespace JobScheduler;
@@ -11,13 +12,14 @@ internal class JobInfoPool
 {
     // This class operates on the assumption that, if a JobID of lesser ID is no longer present, 
 
-    int nextID = 0;
+    // don't start at 0 -- 0 keys break fastmap
+    int nextID = 1;
 
     // consider using this for allocation-friendliness: https://github.com/Wsm2110/Faster.Map/blob/main/src/FastMap.cs
-    private Dictionary<int, JobInfo> Infos { get; } = new();
+    private FastMap<int, JobInfo> Infos { get; } = new();
 
     // Along with the other data, we need to keep track of if we can dispose the handle of a JobID
-    private Dictionary<int, int> WaitHandleSubscriptionCounts { get; } = new();
+    private FastMap<int, int> WaitHandleSubscriptionCounts { get; } = new();
 
     // A pool of handles to use for everything.
     private DefaultObjectPool<ManualResetEvent> ManualResetEventPool { get; } = new(new ManualResetEventPolicy());
@@ -48,11 +50,11 @@ internal class JobInfoPool
         JobInfo info = new(id, ManualResetEventPool.Get());
 
         info.WaitHandle.Reset(); // must reset when acquiring
-        Infos[id] = info;
+        Infos.Emplace(id, info);
         nextID++;
 
         // we want to allocate (sometimes) during Schedule but nowhere else, and we know we'll need this later if the user calls complete, so:
-        WaitHandleSubscriptionCounts[id] = 0;
+        WaitHandleSubscriptionCounts.Emplace(id, 0);
         return id;
     }
 
@@ -95,7 +97,7 @@ internal class JobInfoPool
     {
         // decrement our subscribed handles for this jobID
         // ensures that we only dispose once all callers have gotten the message
-        if (WaitHandleSubscriptionCounts.ContainsKey(jobID)) WaitHandleSubscriptionCounts[jobID]--;
+        if (WaitHandleSubscriptionCounts.Contains(jobID)) WaitHandleSubscriptionCounts[jobID]--;
         if (WaitHandleSubscriptionCounts[jobID] == 0)
         {
             WaitHandleSubscriptionCounts.Remove(jobID);
@@ -110,7 +112,7 @@ internal class JobInfoPool
 
         // increment our subscribed handles for this jobID
         // ensures that we only dispose once all callers have gotten the message
-        if (!WaitHandleSubscriptionCounts.ContainsKey(jobID)) WaitHandleSubscriptionCounts[jobID] = 0;
+        if (!WaitHandleSubscriptionCounts.Contains(jobID)) WaitHandleSubscriptionCounts.Emplace(jobID, 0);
         WaitHandleSubscriptionCounts[jobID]++;
 
         return job.WaitHandle;
@@ -124,7 +126,7 @@ internal class JobInfoPool
     public bool IsComplete(int jobID)
     {
         ValidateJobID(jobID);
-        return !Infos.ContainsKey(jobID);
+        return !Infos.Contains(jobID);
     }
 
     [Conditional("DEBUG")]
